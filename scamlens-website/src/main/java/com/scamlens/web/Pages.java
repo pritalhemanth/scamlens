@@ -467,7 +467,7 @@ public final class Pages {
                 <section class="page-head">
                   <p class="section-tag mono">History</p>
                   <h1 class="page-title"><span>Every check,</span> <span class="tint">nothing more</span></h1>
-                  <p class="lead">Only the result of each check is saved, never the full message.</p>
+                  <p class="lead">Only the result of each check is saved, never the full message. Only you can see your checks, on this browser.</p>
                 </section>
                 %s
                 """.formatted(body);

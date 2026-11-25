@@ -16,7 +16,12 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.regex.Pattern;
 
 /**
  * The web server: it listens for requests from the browser and decides what to do.
@@ -127,7 +132,7 @@ public class WebServer {
 
         String savedStatus;
         try {
-            history.save(result, savePreview);
+            history.save(result, savePreview, visitorId(exchange));
             savedStatus = savePreview
                     ? "Saved to history with a short masked preview."
                     : "Saved to history (no message text stored).";
@@ -141,7 +146,8 @@ public class WebServer {
     /** GET /dashboard */
     private void handleDashboard(HttpExchange exchange) throws IOException {
         if (!requireMethod(exchange, "GET")) return;
-        sendHtml(exchange, 200, Pages.dashboard(history.getStats(), history.findRecent(5)));
+        String visitor = visitorId(exchange);
+        sendHtml(exchange, 200, Pages.dashboard(history.getStats(visitor), history.findRecent(visitor, 5)));
     }
 
     /** GET /history */
@@ -151,7 +157,7 @@ public class WebServer {
             return;
         }
         if (!requireMethod(exchange, "GET")) return;
-        sendHtml(exchange, 200, Pages.history(history.findAll()));
+        sendHtml(exchange, 200, Pages.history(history.findAll(visitorId(exchange))));
     }
 
     /** POST /history/delete with id=5 */
@@ -165,7 +171,7 @@ public class WebServer {
             sendHtml(exchange, 400, Pages.error("Could not delete", "The scan id was missing or invalid."));
             return;
         }
-        history.delete(id);
+        history.delete(id, visitorId(exchange));   // only deletes it if it is this visitor's
         redirect(exchange, "/history");   // show the updated list
     }
 
@@ -173,7 +179,7 @@ public class WebServer {
     private void handleClear(HttpExchange exchange) throws IOException {
         if (!requireMethod(exchange, "POST")) return;
         readBody(exchange);
-        history.deleteAll();
+        history.deleteAll(visitorId(exchange));   // only this visitor's scans
         redirect(exchange, "/history");
     }
 
@@ -228,6 +234,46 @@ public class WebServer {
                 exchange.close();
             }
         };
+    }
+
+    // ---------- visitors (who owns which history) ----------
+
+    /** Name of the cookie that remembers which visitor a browser is. */
+    static final String VISITOR_COOKIE = "scamlens_visitor";
+
+    /** A visitor id is a random UUID: 36 characters of hex digits and dashes. */
+    private static final Pattern VISITOR_ID = Pattern.compile("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+
+    /**
+     * Returns this browser's visitor id, read from its cookie.
+     * A browser without a (valid) cookie gets a new random id, sent back in a Set-Cookie header,
+     * so its next requests carry the same id. There is no login: the cookie IS the identity.
+     *
+     * Call it ONCE per request and keep the result in a local variable.
+     * (Not exchange.setAttribute: in Java's HttpServer those attributes are shared by every
+     * request to the same path, so one visitor's id would leak to the next. Test WEB04 caught this.)
+     */
+    private static String visitorId(HttpExchange exchange) {
+        return readCookie(exchange, VISITOR_COOKIE)
+                .filter(value -> VISITOR_ID.matcher(value).matches())   // ignore made-up values
+                .orElseGet(() -> {
+                    String fresh = UUID.randomUUID().toString();
+                    boolean https = "https".equalsIgnoreCase(exchange.getRequestHeaders().getFirst("X-Forwarded-Proto"));
+                    exchange.getResponseHeaders().add("Set-Cookie", VISITOR_COOKIE + "=" + fresh
+                            + "; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax" + (https ? "; Secure" : ""));
+                    return fresh;
+                });
+    }
+
+    /** Finds one cookie in the request's Cookie header, e.g. "a=1; scamlens_visitor=3f2a…". */
+    static Optional<String> readCookie(HttpExchange exchange, String name) {
+        return exchange.getRequestHeaders().getOrDefault("Cookie", List.of()).stream()
+                .flatMap(header -> Arrays.stream(header.split(";")))
+                .map(String::trim)
+                .filter(pair -> pair.startsWith(name + "="))
+                .map(pair -> pair.substring(name.length() + 1))
+                .map(value -> value.replace("\"", ""))   // some clients send v="abc" instead of v=abc
+                .findFirst();
     }
 
     private boolean requireMethod(HttpExchange exchange, String method) throws IOException {
