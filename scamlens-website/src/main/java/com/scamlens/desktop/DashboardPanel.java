@@ -51,8 +51,8 @@ public class DashboardPanel extends JPanel {
         page.gap(10);
 
         try {
-            DashboardStats stats = history.getStats();
-            List<ScanRecord> recent = history.findRecent(5);
+            DashboardStats stats = history.getStats(HistoryService.ALL_OWNERS);
+            List<ScanRecord> recent = history.findRecent(HistoryService.ALL_OWNERS, 5);
             if (stats.isEmpty()) {
                 page.row(Theme.label("Your checks, counted from the saved history.", Theme.sans(16.5f), Theme.MUTED));
                 page.gap(28);

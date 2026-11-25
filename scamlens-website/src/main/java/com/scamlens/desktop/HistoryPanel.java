@@ -68,7 +68,7 @@ public class HistoryPanel extends JPanel {
         page.gap(28);
 
         try {
-            List<ScanRecord> records = history.findAll();
+            List<ScanRecord> records = history.findAll(HistoryService.ALL_OWNERS);
             model.setRecords(records);
             deleteSelected.setEnabled(false);
             page.row(records.isEmpty() ? emptyState() : tableCard(records.size()));
@@ -85,7 +85,7 @@ public class HistoryPanel extends JPanel {
         String when = record.scannedAt().format(ResultPanel.DATE);
         if (confirm("Delete the check from " + when + "?", "Delete check")) {
             try {
-                history.delete(record.id());
+                history.delete(record.id(), HistoryService.ALL_OWNERS);
             } catch (IOException e) {
                 showError(e);
             }
@@ -97,7 +97,7 @@ public class HistoryPanel extends JPanel {
         int count = model.getRowCount();
         if (count > 0 && confirm("Delete all " + count + " saved checks? This cannot be undone.", "Delete all")) {
             try {
-                history.deleteAll();
+                history.deleteAll(HistoryService.ALL_OWNERS);
             } catch (IOException e) {
                 showError(e);
             }

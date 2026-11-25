@@ -131,7 +131,7 @@ public class ScannerPanel extends JPanel {
 
         String savedStatus;
         try {
-            history.save(result, keepPreview.isSelected());
+            history.save(result, keepPreview.isSelected(), HistoryService.DESKTOP_OWNER);
             savedStatus = keepPreview.isSelected()
                     ? "Saved to history with a short masked preview."
                     : "Saved to history. The message itself was not stored.";
