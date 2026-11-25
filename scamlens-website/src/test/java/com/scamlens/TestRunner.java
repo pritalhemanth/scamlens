@@ -324,45 +324,60 @@ public class TestRunner {
             Path file = Files.createTempDirectory("scamlens").resolve("new/folder/history.txt");
             HistoryService history = new HistoryService(file);
             assertTrue(Files.exists(file), "file exists");
-            assertEquals(List.of(), history.findAll());
-            assertEquals(new DashboardStats(0, 0, 0, 0), history.getStats());
+            assertEquals(List.of(), history.findAll(HistoryService.ALL_OWNERS));
+            assertEquals(new DashboardStats(0, 0, 0, 0), history.getStats("me"));
         });
         test("DB02", "Save then read back: every field matches, preview is masked", () -> {
             HistoryService history = new HistoryService(Files.createTempDirectory("scamlens").resolve("h.txt"));
             long id = history.save(result(75, RiskLevel.HIGH, List.of(Category.URGENCY, Category.URL),
-                    "Act now at http://x.xyz, OTP 123456"), true);
-            ScanRecord r = history.findAll().get(0);
+                    "Act now at http://x.xyz, OTP 123456"), true, "me");
+            ScanRecord r = history.findAll(HistoryService.ALL_OWNERS).get(0);
             assertEquals(id, r.id());
             assertEquals(75, r.score());
             assertEquals(RiskLevel.HIGH, r.riskLevel());
             assertEquals(List.of(Category.URGENCY, Category.URL), r.categories());
             assertEquals("Act now at [link] OTP ######", r.preview());
         });
+        test("DB06", "Each owner sees and deletes only their own scans; old lines count as desktop", () -> {
+            Path file = Files.createTempDirectory("scamlens").resolve("h.txt");
+            Files.writeString(file, "1\t2026-11-20T10:00\t10\tLOW\tURGENCY\t\n");   // saved before owners existed
+            HistoryService history = new HistoryService(file);
+            assertEquals(HistoryService.DESKTOP_OWNER, history.findAll(HistoryService.ALL_OWNERS).get(0).owner());
+            long alices = history.save(result(75, RiskLevel.HIGH, List.of(Category.URL), "a"), false, "alice");
+            history.save(result(40, RiskLevel.SUSPICIOUS, List.of(), "b"), false, "bob");
+            assertEquals(1, history.findAll("alice").size());
+            assertEquals(1, history.findAll("bob").size());
+            assertEquals(new DashboardStats(1, 0, 1, 0), history.getStats("bob"));
+            assertFalse(history.delete(alices, "bob"), "bob cannot delete alice's scan");
+            assertEquals(1, history.deleteAll("bob"));
+            assertEquals(1, history.findAll("alice").size());
+            assertEquals(2, history.findAll(HistoryService.ALL_OWNERS).size());   // alice + the old desktop line
+        });
         test("DB03", "Privacy: with preview off, no message text is stored", () -> {
             Path file = Files.createTempDirectory("scamlens").resolve("h.txt");
             HistoryService history = new HistoryService(file);
-            history.save(result(0, RiskLevel.LOW, List.of(), "my secret message 999"), false);
-            assertEquals(null, history.findAll().get(0).preview());
+            history.save(result(0, RiskLevel.LOW, List.of(), "my secret message 999"), false, "me");
+            assertEquals(null, history.findAll(HistoryService.ALL_OWNERS).get(0).preview());
             assertFalse(Files.readString(file).contains("secret"), "file must not contain the message");
         });
         test("DB04", "Delete one, delete a missing id, then clear all", () -> {
             HistoryService history = new HistoryService(Files.createTempDirectory("scamlens").resolve("h.txt"));
-            long first = history.save(result(10, RiskLevel.LOW, List.of(Category.URGENCY), "a"), false);
-            history.save(result(50, RiskLevel.SUSPICIOUS, List.of(Category.URL), "b"), false);
-            assertTrue(history.delete(first), "first delete");
-            assertEquals(1, history.findAll().size());
-            assertFalse(history.delete(first), "second delete of same id");
-            assertEquals(1, history.deleteAll());
-            assertEquals(List.of(), history.findAll());
+            long first = history.save(result(10, RiskLevel.LOW, List.of(Category.URGENCY), "a"), false, "me");
+            history.save(result(50, RiskLevel.SUSPICIOUS, List.of(Category.URL), "b"), false, "me");
+            assertTrue(history.delete(first, "me"), "first delete");
+            assertEquals(1, history.findAll(HistoryService.ALL_OWNERS).size());
+            assertFalse(history.delete(first, "me"), "second delete of same id");
+            assertEquals(1, history.deleteAll("me"));
+            assertEquals(List.of(), history.findAll(HistoryService.ALL_OWNERS));
         });
         test("DB05", "Dashboard stats are counted from real saved scans", () -> {
             HistoryService history = new HistoryService(Files.createTempDirectory("scamlens").resolve("h.txt"));
-            history.save(result(75, RiskLevel.HIGH, List.of(), "a"), false);
-            history.save(result(80, RiskLevel.HIGH, List.of(), "b"), false);
-            history.save(result(40, RiskLevel.SUSPICIOUS, List.of(), "c"), false);
-            history.save(result(0, RiskLevel.LOW, List.of(), "d"), false);
-            assertEquals(new DashboardStats(4, 2, 1, 1), history.getStats());
-            assertEquals(3, history.findRecent(3).size());
+            history.save(result(75, RiskLevel.HIGH, List.of(), "a"), false, "me");
+            history.save(result(80, RiskLevel.HIGH, List.of(), "b"), false, "me");
+            history.save(result(40, RiskLevel.SUSPICIOUS, List.of(), "c"), false, "me");
+            history.save(result(0, RiskLevel.LOW, List.of(), "d"), false, "me");
+            assertEquals(new DashboardStats(4, 2, 1, 1), history.getStats("me"));
+            assertEquals(3, history.findRecent("me", 3).size());
         });
     }
 
@@ -385,8 +400,8 @@ public class TestRunner {
             WebServer server = new WebServer(new MessageAnalyzer(), history, publicFolder);
             server.start(0);   // 0 = any free port
             try {
-                HttpClient client = HttpClient.newHttpClient();
-                String base = "http://localhost:" + server.port();
+                HttpClient client = browser();
+                String base = "http://127.0.0.1:" + server.port();
                 assertEquals(200, get(client, base + "/").statusCode());
                 assertEquals(200, get(client, base + "/static/styles.css").statusCode());
                 assertEquals(404, get(client, base + "/static/../h.txt").statusCode());
@@ -402,8 +417,37 @@ public class TestRunner {
                 assertEquals(200, scam.statusCode());
                 assertTrue(scam.body().contains("High risk"), "high risk shown");
                 assertFalse(scam.body().contains("<script>alert(1)"), "script must be escaped");
-                assertEquals(1, history.findAll().size());
+                assertEquals(1, history.findAll(HistoryService.ALL_OWNERS).size());
                 assertTrue(get(client, base + "/dashboard").body().contains("Based on 1 saved check"), "dashboard");
+            } finally {
+                server.stop();
+            }
+        });
+        test("WEB04", "Each browser sees only its own history; others cannot delete it", () -> {
+            Path folder = Files.createTempDirectory("scamlens-web");
+            Path publicFolder = Files.createDirectories(folder.resolve("public"));
+            HistoryService history = new HistoryService(folder.resolve("h.txt"));
+            WebServer server = new WebServer(new MessageAnalyzer(), history, publicFolder);
+            server.start(0);
+            try {
+                String base = "http://127.0.0.1:" + server.port();
+                HttpClient alice = browser();
+                HttpClient bob = browser();
+                HttpResponse<String> scan = post(alice, base + "/analyze",
+                        "savePreview=on&message=URGENT+act+now+pay+the+processing+fee");
+                assertTrue(scan.headers().firstValue("Set-Cookie").orElse("").contains("HttpOnly"), "cookie set");
+                assertTrue(get(alice, base + "/history").body().contains("URGENT act now"), "alice sees her scan");
+                assertFalse(get(bob, base + "/history").body().contains("URGENT act now"), "bob does not");
+                assertFalse(get(bob, base + "/dashboard").body().contains("Based on"), "bob has no saved checks");
+
+                long id = history.findAll(HistoryService.ALL_OWNERS).get(0).id();
+                post(bob, base + "/history/delete", "id=" + id);
+                post(bob, base + "/history/clear", "");
+                assertEquals(1, history.findAll(HistoryService.ALL_OWNERS).size());   // still there
+
+                HttpResponse<String> forged = client().send(HttpRequest.newBuilder(URI.create(base + "/history"))
+                        .header("Cookie", "scamlens_visitor=desktop").GET().build(), HttpResponse.BodyHandlers.ofString());
+                assertTrue(forged.headers().firstValue("Set-Cookie").isPresent(), "a made-up id is replaced");
             } finally {
                 server.stop();
             }
@@ -422,7 +466,7 @@ public class TestRunner {
             scanner.clickCheck();
             assertEquals(1, received.size());
             assertEquals(RiskLevel.HIGH, received.get(0).riskLevel());
-            assertEquals(1, history.findAll().size());
+            assertEquals(1, history.findAll(HistoryService.ALL_OWNERS).size());
         });
         test("DESK02", "Swing: an empty message shows an error and opens no result", () -> {
             HistoryService history = new HistoryService(Files.createTempDirectory("scamlens-desk").resolve("h.txt"));
@@ -433,7 +477,7 @@ public class TestRunner {
             scanner.clickCheck();
             assertEquals(0, received.size());
             assertTrue(scanner.noteText().contains("Please enter or paste"), scanner.noteText());
-            assertEquals(0, history.findAll().size());
+            assertEquals(0, history.findAll(HistoryService.ALL_OWNERS).size());
         });
         test("DESK03", "Swing: the logo draws without errors at every icon size", () -> {
             List<java.awt.Image> icons = com.scamlens.desktop.LogoIcon.windowIcons();
@@ -441,6 +485,15 @@ public class TestRunner {
             java.awt.image.BufferedImage big = (java.awt.image.BufferedImage) icons.get(5);
             assertTrue(big.getRGB(64, 10) != 0, "the logo should be drawn, not blank");
         });
+    }
+
+    /** An HttpClient that keeps cookies, like a real browser. */
+    static HttpClient browser() {
+        return HttpClient.newBuilder().cookieHandler(new java.net.CookieManager()).build();
+    }
+
+    static HttpClient client() {
+        return HttpClient.newHttpClient();
     }
 
     static HttpResponse<String> get(HttpClient client, String url) throws Exception {
