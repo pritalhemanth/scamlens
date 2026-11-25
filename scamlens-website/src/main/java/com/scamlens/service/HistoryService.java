@@ -18,6 +18,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 /**
@@ -25,17 +26,29 @@ import java.util.stream.Collectors;
  *
  * The history is stored in a plain text file (data/scan-history.txt), one scan per line:
  *
- *     id <TAB> date-time <TAB> score <TAB> level <TAB> categories <TAB> preview
- *     1     2026-11-24T22:40:05   75         HIGH        URGENCY,THREAT,URL      URGENT: Your SBI account…
+ *     id <TAB> date-time <TAB> score <TAB> level <TAB> categories <TAB> preview <TAB> owner
+ *     1     2026-11-24T22:40:05   75         HIGH        URGENCY,THREAT,URL      URGENT: Your…   3f2a9c1e-…
  *
  * PRIVACY: the full message is never stored. The preview is optional, at most
  * 40 characters, with digits turned into # and links into [link].
+ *
+ * OWNERS: on the website every browser gets a random visitor id (a cookie), and each
+ * scan is saved with that id as its owner. The website only ever asks for one owner's
+ * scans, so people see and delete only their own history.
+ * The desktop app is used by one person on their own computer, so it saves with the
+ * owner "desktop" and uses ALL_OWNERS to see every scan in the local file.
  *
  * The web pages never touch this file directly; they call these methods.
  */
 public class HistoryService {
 
     private static final String SEPARATOR = "\t";
+
+    /** Pass this as the owner to work with every scan in the file (used by the desktop app). */
+    public static final String ALL_OWNERS = null;
+
+    /** Owner name used for scans made in the Swing desktop app. */
+    public static final String DESKTOP_OWNER = "desktop";
 
     private final Path file;
 
@@ -57,9 +70,13 @@ public class HistoryService {
     /**
      * Saves one scan and returns its new id.
      * @param savePreview true = store a short masked preview, false = store no message text at all
+     * @param owner       who made the scan: a website visitor id, or DESKTOP_OWNER
      */
-    public synchronized long save(AnalysisResult result, boolean savePreview) throws IOException {
-        long id = findAll().stream()
+    public synchronized long save(AnalysisResult result, boolean savePreview, String owner) throws IOException {
+        if (owner == null || owner.isBlank() || owner.contains(SEPARATOR) || owner.contains("\n")) {
+            throw new IllegalArgumentException("Every saved scan needs a simple owner id");
+        }
+        long id = findAll(ALL_OWNERS).stream()
                 .mapToLong(ScanRecord::id)
                 .max()
                 .orElse(0) + 1;                                // next id = biggest id + 1
@@ -75,34 +92,39 @@ public class HistoryService {
                 String.valueOf(result.score()),
                 result.riskLevel().name(),
                 categories,
-                preview);
+                preview,
+                owner);
 
         Files.writeString(file, line + System.lineSeparator(), StandardCharsets.UTF_8,
                 StandardOpenOption.APPEND);
         return id;
     }
 
-    /** All scans, newest first. Returns an empty list if there are none. */
-    public synchronized List<ScanRecord> findAll() throws IOException {
+    /** One owner's scans (or every scan for ALL_OWNERS), newest first. Empty list if there are none. */
+    public synchronized List<ScanRecord> findAll(String owner) throws IOException {
         return Files.readAllLines(file, StandardCharsets.UTF_8).stream()
                 .filter(line -> !line.isBlank())
                 .map(HistoryService::parseLine)
+                .filter(belongsTo(owner))
                 .sorted(Comparator.comparing(ScanRecord::scannedAt)
                         .thenComparing(ScanRecord::id)
                         .reversed())
                 .toList();
     }
 
-    /** The newest scans, up to the given limit. */
-    public List<ScanRecord> findRecent(int limit) throws IOException {
-        return findAll().stream().limit(limit).toList();
+    /** One owner's newest scans, up to the given limit. */
+    public List<ScanRecord> findRecent(String owner, int limit) throws IOException {
+        return findAll(owner).stream().limit(limit).toList();
     }
 
-    /** Deletes one scan. Returns true if it existed. */
-    public synchronized boolean delete(long id) throws IOException {
-        List<ScanRecord> all = findAll();
+    /**
+     * Deletes one scan, but only if it belongs to this owner.
+     * Returns true if it was deleted. Someone else's id is treated as "not found".
+     */
+    public synchronized boolean delete(long id, String owner) throws IOException {
+        List<ScanRecord> all = findAll(ALL_OWNERS);
         List<ScanRecord> kept = all.stream()
-                .filter(record -> record.id() != id)
+                .filter(record -> record.id() != id || !belongsTo(owner).test(record))
                 .toList();
         if (kept.size() == all.size()) {
             return false;                                      // nothing had that id
@@ -111,17 +133,20 @@ public class HistoryService {
         return true;
     }
 
-    /** Deletes every scan. Returns how many were deleted. */
-    public synchronized int deleteAll() throws IOException {
-        int count = findAll().size();
-        Files.writeString(file, "", StandardCharsets.UTF_8);
-        return count;
+    /** Deletes every scan of this owner (every scan in the file for ALL_OWNERS). Returns how many. */
+    public synchronized int deleteAll(String owner) throws IOException {
+        List<ScanRecord> all = findAll(ALL_OWNERS);
+        List<ScanRecord> kept = all.stream()
+                .filter(belongsTo(owner).negate())
+                .toList();
+        rewrite(kept);
+        return all.size() - kept.size();
     }
 
-    /** Dashboard numbers, counted from the real saved scans. */
-    public DashboardStats getStats() throws IOException {
+    /** One owner's dashboard numbers, counted from their real saved scans. */
+    public DashboardStats getStats(String owner) throws IOException {
         // FUNCTIONAL: group the scans by risk level and count each group
-        Map<RiskLevel, Long> counts = findAll().stream()
+        Map<RiskLevel, Long> counts = findAll(owner).stream()
                 .collect(Collectors.groupingBy(ScanRecord::riskLevel, Collectors.counting()));
 
         Function<RiskLevel, Integer> countOf = level -> counts.getOrDefault(level, 0L).intValue();
@@ -131,6 +156,11 @@ public class HistoryService {
     }
 
     // ---------- helpers ----------
+
+    /** FUNCTIONAL: a Predicate that answers "does this scan belong to this owner?" */
+    private static Predicate<ScanRecord> belongsTo(String owner) {
+        return record -> owner == ALL_OWNERS || owner.equals(record.owner());
+    }
 
     /** Writes the given records back to the file, oldest first. */
     private void rewrite(List<ScanRecord> records) throws IOException {
@@ -142,7 +172,8 @@ public class HistoryService {
                         String.valueOf(r.score()),
                         r.riskLevel().name(),
                         r.categories().stream().map(Category::name).collect(Collectors.joining(",")),
-                        r.preview() == null ? "" : r.preview()))
+                        r.preview() == null ? "" : r.preview(),
+                        r.owner()))
                 .toList();
         Files.write(file, lines, StandardCharsets.UTF_8);
     }
@@ -154,13 +185,16 @@ public class HistoryService {
             throw new IllegalStateException("Damaged history line: " + line);
         }
         String preview = parts[5].isEmpty() ? null : parts[5];
+        // Lines saved before owners existed have no 7th field; they count as desktop scans
+        String owner = parts.length > 6 && !parts[6].isEmpty() ? parts[6] : DESKTOP_OWNER;
         return new ScanRecord(
                 Long.parseLong(parts[0]),
                 LocalDateTime.parse(parts[1]),
                 Integer.parseInt(parts[2]),
                 RiskLevel.valueOf(parts[3]),
                 parseCategories(parts[4]),
-                preview);
+                preview,
+                owner);
     }
 
     /** "URGENCY,URL" -> [URGENCY, URL] */
