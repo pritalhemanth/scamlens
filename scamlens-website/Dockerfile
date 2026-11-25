@@ -5,4 +5,4 @@ WORKDIR /app
 COPY . .
 RUN javac -d out -sourcepath src/main/java src/main/java/com/scamlens/Main.java
 EXPOSE 8765
-CMD ["java", "-cp", "out", "com.scamlens.Main"]
+CMD ["java", "-Duser.timezone=Asia/Kolkata", "-cp", "out", "com.scamlens.Main"]

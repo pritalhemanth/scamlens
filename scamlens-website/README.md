@@ -42,7 +42,7 @@ desktop/
 
 ## Run the tests
 
-Double-click **`test.bat`** (Mac/Linux: `sh test.sh`). It runs all 49 tests and
+Double-click **`test.bat`** (Mac/Linux: `sh test.sh`). It runs all 51 tests and
 prints PASS or FAIL for each one.
 
 ## Put it online (free)
@@ -63,8 +63,10 @@ Things to know about the free plan:
 - The site goes to sleep after about 15 minutes with no visitors. The next visit
   takes about a minute to wake it up, so open it before you present.
 - The scan history is cleared whenever Render restarts the site.
-- Everyone who uses the live site shares the same history. The full message is
-  never saved, and the preview is off by default.
+- Each visitor sees only their own history. The site gives every browser a random
+  id in a cookie and saves each check with that id. A different browser, a private
+  window or clearing cookies starts a new, empty history.
+- The times are shown in Indian time (the Dockerfile sets `-Duser.timezone=Asia/Kolkata`).
 
 ## Project structure
 
@@ -82,7 +84,7 @@ src/main/java/com/scamlens/
 ├── service/                  HistoryService (saves history in data/scan-history.txt)
 └── util/                     InputValidator, PreviewMaker, TextHighlighter, SampleMessages
 src/test/java/com/scamlens/
-└── TestRunner.java           all 49 tests
+└── TestRunner.java           all 51 tests
 public/
 ├── styles.css                the dark theme
 └── app.js                    character counter, Ctrl+Enter, delete confirmation
